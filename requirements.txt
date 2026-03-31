@@ -1,2 +1,3 @@
 vkbottle
 aiohttp
+asyncpg
