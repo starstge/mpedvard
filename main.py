@@ -20,7 +20,7 @@ PEER_ID = None
 queue_msg_id = None
 ranks = {OWNER_ID: 2}
 
-# ================= ВЕБ-СЕРВЕР ДЛЯ RENDER =================
+# ================= ВЕБ-СЕРВЕР =================
 async def handle_ping(request):
     return web.Response(text="Бот активен!")
 
@@ -29,11 +29,10 @@ async def start_web_server():
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render ОБЯЗАТЕЛЬНО требует слушать порт из переменной окружения PORT
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"--- Сервер запущен на порту {port} ---")
+    print(f"--- HTTP Сервер запущен на порту {port} ---")
 
 # ================= БАЗА ДАННЫХ =================
 def init_db():
@@ -73,8 +72,7 @@ def get_kb():
 
 async def update_queue_msg():
     if not PEER_ID: return
-    text = "📝 **Очередь на лог-МП:**\n"
-    text += "--------------------------\n"
+    text = "📝 **Очередь на лог-МП:**\n--------------------------\n"
     if not queue:
         text += "Пока никого нет. Будь первым!"
     else:
@@ -91,13 +89,13 @@ async def update_queue_msg():
         queue_msg_id = res
         save_data()
 
-# ================= КОМАНДЫ =================
+# ================= ХЕНДЛЕРЫ =================
 @bot.on.message(text="/peer")
 async def cmd_peer(message: Message):
     if message.from_id != OWNER_ID: return
     global PEER_ID, queue_msg_id
     PEER_ID = message.peer_id
-    queue_msg_id = None # Создаем новое сообщение
+    queue_msg_id = None
     await update_queue_msg()
 
 @bot.on.message(text="/clear")
@@ -111,37 +109,34 @@ async def cmd_clear(message: Message):
 async def handle_buttons(event: MessageEvent):
     user = event.user_id
     action = event.payload.get("action")
-    
     if action == "join":
-        if user in queue:
-            await event.show_snackbar("Вы уже в списке!")
+        if user in queue: await event.show_snackbar("Вы уже в списке!")
         else:
             queue.append(user)
             save_data()
             await update_queue_msg()
             await event.show_snackbar("Вы добавлены!")
-            
     elif action == "exit":
         if user in queue:
             queue.remove(user)
             save_data()
             await update_queue_msg()
-            await event.show_snackbar("Вы вышли из очереди.")
-        else:
-            await event.show_snackbar("Вас и так нет в списке.")
+            await event.show_snackbar("Вы вышли.")
+        else: await event.show_snackbar("Вас нет в списке.")
 
-# ================= ЗАПУСК =================
+# ================= ГЛАВНЫЙ ЗАПУСК =================
 async def main():
-    try:
-        init_db()
-        load_data()
-        # Сначала запускаем веб-сервер, чтобы Render не закрыл деплой
-        await start_web_server()
-        print("--- Бот запускает LongPoll ---")
-        await bot.run_polling()
-    except Exception as e:
-        print(f"Критическая ошибка: {e}")
-        sys.exit(1)
+    init_db()
+    load_data()
+    
+    # Запускаем веб-сервер
+    await start_web_server()
+    
+    print("--- Бот запущен и готов к работе! ---")
+    
+    # Используем run_polling БЕЗ создания нового цикла
+    await bot.run_polling()
 
 if __name__ == "__main__":
+    # Запускаем один общий цикл для всего
     asyncio.run(main())
