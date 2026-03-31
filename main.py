@@ -109,14 +109,14 @@ async def handle_callback(event: MessageEvent):
 
 # ================= СЕРВЕР И ЗАПУСК =================
 async def web_handler(request):
-    return web.Response(text="Bot is running with Postgres!")
+    return web.Response(text="Bot is running!")
 
 async def main():
     # 1. Инициализация БД
     await init_db()
     await load_from_db()
 
-    # 2. Настройка веб-сервера
+    # 2. Настройка веб-сервера aiohttp
     app = web.Application()
     app.router.add_get("/", web_handler)
     runner = web.AppRunner(app)
@@ -126,14 +126,14 @@ async def main():
     await site.start()
     print(f"--- HTTP Server started on port {port} ---")
 
-    # 3. Запуск Polling БЕЗ создания нового цикла
-    # Это "чистый" способ запустить vkbottle внутри существующего loop
+    # 3. Запуск Polling через внутренний метод, чтобы не конфликтовать с циклом
     print("--- Starting VK Polling ---")
-    await bot.run_polling()
+    async for event in bot.polling.get_events():
+        for event_data in event.get("updates", []):
+            asyncio.create_task(bot.router.route(event_data, bot.api))
 
 if __name__ == "__main__":
-    # Используем базовый asyncio.run
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
