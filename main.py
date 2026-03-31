@@ -2,6 +2,7 @@ import asyncio
 import json
 import sqlite3
 import os
+import sys
 from collections import deque
 from aiohttp import web
 
@@ -15,33 +16,30 @@ DB_FILE = "queue.db"
 
 bot = Bot(TOKEN)
 queue = deque()
-active_user = None
+PEER_ID = None
 queue_msg_id = None
-PEER_ID = None # Определится автоматически после команды /peer
-ranks = {}
-lock = asyncio.Lock()
+ranks = {OWNER_ID: 2}
 
-# ================= ВЕБ-СЕРВЕР (Для Render) =================
+# ================= ВЕБ-СЕРВЕР ДЛЯ RENDER =================
 async def handle_ping(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Бот активен!")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render передает порт через переменную окружения PORT
+    # Render ОБЯЗАТЕЛЬНО требует слушать порт из переменной окружения PORT
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"--- Web server started on port {port} ---")
+    print(f"--- Сервер запущен на порту {port} ---")
 
 # ================= БАЗА ДАННЫХ =================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT)")
-    cur.execute("CREATE TABLE IF NOT EXISTS ranks (user_id INTEGER PRIMARY KEY, rank INTEGER DEFAULT 0)")
     conn.commit()
     conn.close()
 
@@ -56,6 +54,7 @@ def save_data():
 
 def load_data():
     global queue, PEER_ID, queue_msg_id
+    if not os.path.exists(DB_FILE): return
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("SELECT key, value FROM state")
@@ -63,22 +62,24 @@ def load_data():
     if "queue" in data: queue = deque(json.loads(data["queue"]))
     if "peer_id" in data and data["peer_id"]: PEER_ID = int(data["peer_id"])
     if "msg_id" in data and data["msg_id"]: queue_msg_id = int(data["msg_id"])
-    
-    cur.execute("SELECT user_id, rank FROM ranks")
-    for uid, r in cur.fetchall(): ranks[uid] = r
     conn.close()
 
-# ================= ЛОГИКА ОЧЕРЕДИ =================
+# ================= ИНТЕРФЕЙС =================
 def get_kb():
-    return Keyboard(inline=False).add(Text("Занять очередь", {"action": "join"})).get_json()
+    kb = Keyboard(inline=False)
+    kb.add(Text("Занять место", {"action": "join"}), color="positive")
+    kb.add(Text("Выйти", {"action": "exit"}), color="negative")
+    return kb.get_json()
 
 async def update_queue_msg():
     if not PEER_ID: return
-    text = " **Очередь на МП:**\n"
+    text = "📝 **Очередь на лог-МП:**\n"
+    text += "--------------------------\n"
     if not queue:
-        text += "Пусто. Будь первым!"
-    for i, uid in enumerate(queue, 1):
-        text += f"{i}. [id{uid}|Участник]\n"
+        text += "Пока никого нет. Будь первым!"
+    else:
+        for i, uid in enumerate(queue, 1):
+            text += f"{i}. [id{uid}|👤 Участник]\n"
     
     global queue_msg_id
     try:
@@ -90,46 +91,57 @@ async def update_queue_msg():
         queue_msg_id = res
         save_data()
 
-# ================= ОБРАБОТЧИКИ =================
+# ================= КОМАНДЫ =================
 @bot.on.message(text="/peer")
-async def set_peer(message: Message):
-    global PEER_ID
+async def cmd_peer(message: Message):
+    if message.from_id != OWNER_ID: return
+    global PEER_ID, queue_msg_id
     PEER_ID = message.peer_id
-    save_data()
-    await message.answer(f"✅ Чат привязан! Peer ID: {PEER_ID}")
+    queue_msg_id = None # Создаем новое сообщение
     await update_queue_msg()
 
 @bot.on.message(text="/clear")
-async def clear_q(message: Message):
-    if ranks.get(message.from_id, 0) < 2 and message.from_id != OWNER_ID: return
+async def cmd_clear(message: Message):
+    if message.from_id != OWNER_ID: return
     queue.clear()
     save_data()
     await update_queue_msg()
 
 @bot.on.raw_event(GroupEventType.MESSAGE_EVENT)
-async def buttons(event: MessageEvent):
+async def handle_buttons(event: MessageEvent):
     user = event.user_id
     action = event.payload.get("action")
     
     if action == "join":
         if user in queue:
-            await event.show_snackbar("Ты уже записан!")
+            await event.show_snackbar("Вы уже в списке!")
         else:
             queue.append(user)
             save_data()
-            await event.show_snackbar("Добавлен в очередь!")
             await update_queue_msg()
+            await event.show_snackbar("Вы добавлены!")
+            
+    elif action == "exit":
+        if user in queue:
+            queue.remove(user)
+            save_data()
+            await update_queue_msg()
+            await event.show_snackbar("Вы вышли из очереди.")
+        else:
+            await event.show_snackbar("Вас и так нет в списке.")
 
+# ================= ЗАПУСК =================
 async def main():
-    init_db()
-    load_data()
-    ranks[OWNER_ID] = 2
-    
-    # Запускаем веб-сервер фоном
-    await start_web_server()
-    
-    print("Бот запущен и готов к работе!")
-    await bot.run_polling()
+    try:
+        init_db()
+        load_data()
+        # Сначала запускаем веб-сервер, чтобы Render не закрыл деплой
+        await start_web_server()
+        print("--- Бот запускает LongPoll ---")
+        await bot.run_polling()
+    except Exception as e:
+        print(f"Критическая ошибка: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
